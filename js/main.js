@@ -75,7 +75,6 @@
     }
 
     // ================== TTS (음성 재생) 기능 ==================
-    // GitHub 소리 문제 해결 포함
     let englishVoice = null;
     let areVoicesLoaded = false;
 
@@ -89,29 +88,22 @@
         }
     }
 
-    // 브라우저가 음성 목록을 비동기적으로 로드하므로, 변경 이벤트를 감지합니다.
     if ('speechSynthesis' in window) {
         window.speechSynthesis.onvoiceschanged = loadVoices;
-        // 일부 브라우저는 이벤트가 바로 발생하지 않으므로 초기에 한번 호출합니다.
         loadVoices();
     }
 
     function speak(text, rate = 0.95) {
         if (!('speechSynthesis' in window) || !text) return;
-
-        // 음성이 아직 로드되지 않았다면 잠시 기다렸다가 다시 시도합니다.
         if (!areVoicesLoaded) {
             setTimeout(() => speak(text, rate), 100);
             return;
         }
-
         try {
             window.speechSynthesis.cancel();
             const u = new SpeechSynthesisUtterance(text);
             u.lang = 'en-US';
-            if (englishVoice) {
-                u.voice = englishVoice;
-            }
+            if (englishVoice) u.voice = englishVoice;
             u.rate = rate;
             u.pitch = 1.0;
             u.volume = 1;
@@ -121,7 +113,6 @@
         }
     }
     
-    // 효과음
     const AC = window.AudioContext || window.webkitAudioContext;
     const ctx = AC ? new AC() : null;
     function tone(freq = 660, duration = 90, type = 'sine', gain = 0.18) {
@@ -369,7 +360,23 @@
 
     function wrongPopup() {
         modalTitle.textContent = '오답!';
-        modalDetail.textContent = `정답: ${quizDirection === 'en-ko' ? current.ko : current.en}`;
+        
+        const reviewSource = REVIEW_DATA[currentSetKey] || {};
+        const data = reviewSource[current.en];
+        
+        let detailHTML = `<p><strong>정답: ${current.ko}</strong></p>`;
+        
+        if (data) {
+            detailHTML += `
+                <div class="review-content">
+                    <p><strong>예문:</strong> ${data.example}</p>
+                    <p><strong>해석:</strong> ${data.translation}</p>
+                    <p><strong>암기법:</strong> ${data.mnemonic}</p>
+                </div>
+            `;
+        }
+        
+        modalDetail.innerHTML = detailHTML;
         modal.classList.remove('hidden');
     }
 

@@ -53,7 +53,10 @@
       .modal.hidden{display:none}
       .modal-card{background:#fff;border-radius:16px;max-width:520px;width:92vw;padding:26px 22px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.15)}
       .result-title{font-size:28px;margin:0 0 8px 0}
-      .result-detail{font-size:18px;color:#555;margin:0 0 18px 0}
+      .result-detail{font-size:16px;color:#555;margin:0 0 18px 0; line-height: 1.6;}
+      .result-detail p { margin: 4px 0; }
+      .result-detail strong { color: var(--fg); }
+      .result-detail .review-content { text-align: left; margin-top: 16px; padding-top: 12px; border-top: 1px solid #eee; }
       .modal-card input{width:100%;padding:12px 14px;font-size:16px;border:1px solid #e6e6e6;border-radius:10px}
       .modal-card .desc{color:#777;margin:8px 0 16px}
       .end-level-wrap{text-align:center;margin-top:48px;}
@@ -178,7 +181,7 @@
     <div id="result-modal" class="modal hidden" role="dialog" aria-modal="true">
         <div class="modal-card">
             <h3 id="result-title" class="result-title">정답</h3>
-            <p id="result-detail" class="result-detail"></p>
+            <div id="result-detail" class="result-detail"></div>
             <button id="modal-next" class="btn btn-primary xlarge">다음 문제로</button>
         </div>
     </div>
