@@ -4,9 +4,12 @@
 (function(){
     // ================== 설정 ==================
     const SPREADSHEET_URL = 'https://script.google.com/macros/s/AKfycbyrlSHgq7H-MY4XVOLWuBXlvScmbeGHHZkVEWtnquPOjx9GX5qJA4xlbZKvdSrcOdg/exec';
+    const WORDS_PER_SUBSET = 50;
 
     // ================== 상태 변수 ==================
     let currentSetKey = null;
+    let currentSubSetIndex = 0;
+    let currentWordList = [];
     let currentLevel = 1;
     let quizDirection = 'en-ko';
     let queue = [];
@@ -20,12 +23,14 @@
     let qStart = 0;
     let timer = null;
     let timeLeft = 0;
+    let isReplaying = false; // 오디오 재생 중 상태
 
     // ================== 엘리먼트 캐싱 ==================
     const $ = sel => document.querySelector(sel);
     const $$ = sel => document.querySelectorAll(sel);
 
     const viewSets = $('#view-sets');
+    const viewSubsets = $('#view-subsets');
     const viewLevels = $('#view-levels');
     const viewLevel3Mode = $('#view-level3-mode');
     const viewQuiz = $('#view-quiz');
@@ -36,6 +41,8 @@
     const homeBtn = $('#home-btn');
     const ttsBtn = $('#tts-btn');
 
+    const chosenMainSetChip = $('#chosen-main-set');
+    const subsetButtonsContainer = $('#subset-buttons');
     const chosenSetChip = $('#chosen-set');
     const chosenSetModeChip = $('#chosen-set-mode');
 
@@ -64,54 +71,11 @@
     const reviewWrongBtn = $('#review-wrong-btn');
     const reviewListContainer = $('#review-list-container');
     const reviewHomeBtn = $('#review-home-btn');
+    const replayWrongBtn = $('#replay-wrong-btn'); // 오답 다시 듣기 버튼
 
-    // ================== 유틸리티 함수 ==================
+    // ================== 유틸리티 및 오디오 함수 ==================
     const sleep = ms => new Promise(r => setTimeout(r, ms));
-    const shuffle = (arr) => arr.sort(() => Math.random() - 0.5);
-
-    function setView(id){
-        $$('.view').forEach(v => v.classList.remove('active'));
-        $(id).classList.add('active');
-    }
-
-    // ================== TTS (음성 재생) 기능 ==================
-    let englishVoice = null;
-    let areVoicesLoaded = false;
-
-    function loadVoices() {
-        const voices = window.speechSynthesis.getVoices();
-        englishVoice = voices.find(v => /^en-US/.test(v.lang) && /Google|Microsoft|Apple/i.test(v.name)) 
-                    || voices.find(v => /^en-/.test(v.lang)) 
-                    || null;
-        if (voices.length > 0) {
-            areVoicesLoaded = true;
-        }
-    }
-
-    if ('speechSynthesis' in window) {
-        window.speechSynthesis.onvoiceschanged = loadVoices;
-        loadVoices();
-    }
-
-    function speak(text, rate = 0.95) {
-        if (!('speechSynthesis' in window) || !text) return;
-        if (!areVoicesLoaded) {
-            setTimeout(() => speak(text, rate), 100);
-            return;
-        }
-        try {
-            window.speechSynthesis.cancel();
-            const u = new SpeechSynthesisUtterance(text);
-            u.lang = 'en-US';
-            if (englishVoice) u.voice = englishVoice;
-            u.rate = rate;
-            u.pitch = 1.0;
-            u.volume = 1;
-            window.speechSynthesis.speak(u);
-        } catch(e) {
-            console.error("TTS Error:", e);
-        }
-    }
+    const shuffle = (arr) => [...arr].sort(() => Math.random() - 0.5);
     
     const AC = window.AudioContext || window.webkitAudioContext;
     const ctx = AC ? new AC() : null;
@@ -130,15 +94,60 @@
         g.gain.exponentialRampToValueAtTime(0.0001, now + duration / 1000);
         o.stop(now + duration / 1000 + 0.01);
     }
-    const uiTap = () => tone(520, 70, 'sine', 0.14);
+    const playCorrectSound = () => tone(880, 90, 'triangle', 0.15);
+    const playWrongSound = () => tone(330, 180, 'sawtooth', 0.18);
+
+    function setView(id){
+        $$('.view').forEach(v => v.classList.remove('active'));
+        $(id).classList.add('active');
+    }
+
+    // ================== TTS (음성 재생) 기능 ==================
+    let enVoice = null;
+    let koVoice = null;
+    let areVoicesLoaded = false;
+    function loadVoices() {
+        const voices = window.speechSynthesis.getVoices();
+        enVoice = voices.find(v => v.lang.startsWith('en-US')) || voices.find(v => v.lang.startsWith('en-'));
+        koVoice = voices.find(v => v.lang.startsWith('ko-KR'));
+        if (voices.length > 0) areVoicesLoaded = true;
+    }
+    if ('speechSynthesis' in window) {
+        window.speechSynthesis.onvoiceschanged = loadVoices;
+        loadVoices();
+    }
+    function speak(text, lang = 'en-US', rate = 0.95) {
+        if (!('speechSynthesis' in window) || !text) return Promise.resolve();
+        if (!areVoicesLoaded) {
+            return new Promise(resolve => setTimeout(() => resolve(speak(text, lang, rate)), 100));
+        }
+        
+        return new Promise(resolve => {
+            try {
+                const u = new SpeechSynthesisUtterance(text);
+                u.lang = lang;
+                if (lang.startsWith('en') && enVoice) u.voice = enVoice;
+                if (lang.startsWith('ko') && koVoice) u.voice = koVoice;
+                u.rate = rate;
+                u.onend = resolve;
+                u.onerror = () => {
+                    console.error("TTS Error for:", text);
+                    resolve();
+                };
+                window.speechSynthesis.speak(u);
+            } catch(e) { 
+                console.error("TTS Exception:", e);
+                resolve();
+            }
+        });
+    }
     
     // ================== 서버 전송 (스프레드시트) ==================
     function sendResult(payload){
       try{
         if(!SPREADSHEET_URL || SPREADSHEET_URL.includes('PASTE')) return;
         fetch(SPREADSHEET_URL, {
-          method:'POST',
-          mode:'no-cors',
+          method:'POST', mode:'no-cors',
           headers:{ 'Content-Type':'text/plain;charset=utf-8' },
           body: JSON.stringify(payload)
         });
@@ -147,15 +156,15 @@
 
     // ================== 퀴즈 로직 ==================
     function choiceCountFor(lv) {
-        return lv === 1 ? 2 : lv === 2 ? 4 : lv === 4 ? 8 : 6;
+        return lv === 1 ? 2 : lv === 2 ? 4 : 6;
     }
 
     function buildChoices(word) {
-        const set = WORD_SETS[currentSetKey];
+        const mainSet = WORD_SETS[currentSetKey];
         const need = choiceCountFor(currentLevel);
         const isEnKo = quizDirection === 'en-ko';
         
-        const others = shuffle(set.filter(w => w.en !== word.en)).slice(0, need - 1);
+        const others = shuffle(mainSet.filter(w => w.en !== word.en)).slice(0, need - 1);
         const list = shuffle([word, ...others]);
         
         choicesEl.innerHTML = '';
@@ -192,22 +201,77 @@
     }
 
     function goHome() {
+        window.speechSynthesis.cancel(); // 홈으로 갈 때 음성 중지
+        isReplaying = false;
         setView('#view-sets'); 
         crumb.textContent = '세트 선택'; 
         homeBtn.style.display = 'none';
         ttsBtn.style.display = 'none';
         stopTimer(); 
-        uiTap(); 
     }
 
-    function startSet(setKey) {
+    function labelForSet(key) {
+        const labels = { mid: '중등 필수', toeic: '토익 기출', gre: 'GRE 고난도' };
+        return labels[key] || '세트';
+    }
+    
+    function selectMainSet(setKey) {
         currentSetKey = setKey;
-        chosenSetChip.textContent = labelForSet(setKey);
-        chosenSetModeChip.textContent = labelForSet(setKey);
+        const mainSet = WORD_SETS[setKey];
+        const totalWords = mainSet.length;
+        const numSubsets = Math.ceil(totalWords / WORDS_PER_SUBSET);
+
+        chosenMainSetChip.textContent = labelForSet(setKey);
+        subsetButtonsContainer.innerHTML = '';
+
+        for (let i = 0; i < numSubsets; i++) {
+            const start = i * WORDS_PER_SUBSET + 1;
+            const end = Math.min((i + 1) * WORDS_PER_SUBSET, totalWords);
+            const btn = document.createElement('button');
+            btn.className = 'btn btn-ghost';
+            btn.textContent = `${i + 1} Set (${start}–${end}번)`;
+            btn.dataset.subsetIndex = i;
+            btn.addEventListener('click', () => {
+                startSubSet(i);
+            });
+            subsetButtonsContainer.appendChild(btn);
+        }
+        
+        const allBtn = document.createElement('button');
+        allBtn.className = 'btn btn-primary';
+        allBtn.textContent = 'ALL Sets (전체 학습)';
+        allBtn.style.gridColumn = 'span 2';
+        allBtn.dataset.subsetIndex = -1;
+        allBtn.addEventListener('click', () => {
+            startSubSet(-1);
+        });
+        subsetButtonsContainer.appendChild(allBtn);
+
+
         crumb.textContent = labelForSet(setKey);
         homeBtn.style.display = 'inline-flex';
+        setView('#view-subsets');
+    }
+
+    function startSubSet(subSetIndex) {
+        currentSubSetIndex = subSetIndex;
+        const mainSet = WORD_SETS[currentSetKey];
+        let setLabel = '';
+
+        if (subSetIndex === -1) {
+            currentWordList = mainSet;
+            setLabel = `${labelForSet(currentSetKey)} · ALL Sets`;
+        } else {
+            const start = subSetIndex * WORDS_PER_SUBSET;
+            const end = start + WORDS_PER_SUBSET;
+            currentWordList = mainSet.slice(start, end);
+            setLabel = `${labelForSet(currentSetKey)} · ${subSetIndex + 1} Set`;
+        }
+        
+        chosenSetChip.textContent = setLabel;
+        chosenSetModeChip.textContent = setLabel;
+        
         setView('#view-levels');
-        uiTap();
     }
     
     function startLevel(lv) {
@@ -227,34 +291,30 @@
     }
 
     function startLevelCore() {
-        queue = shuffle([...WORD_SETS[currentSetKey]]);
+        queue = shuffle(currentWordList);
         solvedCount = 0;
         current = null;
         testDone = 0;
         testCorrect = 0;
         testWrongAnswers = [];
         
-        let crumbText = `${labelForSet(currentSetKey)} · ${currentLevel}단계`;
+        let crumbText = `${labelForSet(currentSetKey)} · ${currentSubSetIndex === -1 ? 'ALL Sets' : `${currentSubSetIndex + 1} Set`} · ${currentLevel}단계`;
         if (testMode) crumbText += ' (테스트)';
         if (currentLevel === 3) crumbText += quizDirection === 'ko-en' ? ' (뜻 → 단어)' : ' (단어 → 뜻)';
         crumb.textContent = crumbText;
         
         ttsBtn.style.display = 'inline-flex';
         setView('#view-quiz');
-        uiTap();
         nextQuestion();
     }
 
-    function labelForSet(key) {
-        const labels = { elem: '초등 100개', mid: '중등 100개', high: '고등 100개', uni: '대학 100개', gre: 'GRE 100개' };
-        return labels[key] || '세트';
-    }
-
     function updateStatus() {
+        const total = currentWordList.length;
+        const subsetLabel = currentSubSetIndex === -1 ? 'ALL Sets' : `${currentSubSetIndex + 1} Set`;
         if (testMode) {
-            statusChip.textContent = `${labelForSet(currentSetKey)} · 4단계 · 진행 ${testDone}/100 · 정답 ${testCorrect}`;
+            statusChip.textContent = `${labelForSet(currentSetKey)} · ${subsetLabel} · 진행 ${testDone}/${total} · 정답 ${testCorrect}`;
         } else {
-            statusChip.textContent = `${labelForSet(currentSetKey)} · ${currentLevel}단계 · 완료 ${solvedCount}/100`;
+            statusChip.textContent = `${labelForSet(currentSetKey)} · ${subsetLabel} · 완료 ${solvedCount}/${total}`;
         }
     }
 
@@ -262,20 +322,26 @@
         endLevelTitle.textContent = `${currentLevel}단계 완료!`;
         nextLevelBtn.style.display = (currentLevel < 4) ? 'inline-flex' : 'none';
         reviewWrongBtn.style.display = (testWrongAnswers.length > 0) ? 'inline-flex' : 'none';
+        
         setView('#view-end-level');
         ttsBtn.style.display = 'none';
         crumb.textContent = '단계 완료';
     }
 
     function nextQuestion() {
-        if (queue.length === 0) {
+        if ((!testMode && solvedCount >= currentWordList.length) || (testMode && testDone >= currentWordList.length)) {
             if (testMode) {
-                sendResult({type:'summary', userId:testUserId, setKey:currentSetKey, setLabel:labelForSet(currentSetKey), level:4, total:100, correct:testCorrect, timestamp:new Date().toISOString(), userAgent:navigator.userAgent});
+                sendResult({type:'summary', userId:testUserId, setKey:currentSetKey, setLabel:labelForSet(currentSetKey), level:4, total:currentWordList.length, correct:testCorrect, timestamp:new Date().toISOString(), userAgent:navigator.userAgent});
             }
             showEndLevelView();
             return;
         }
 
+        if (queue.length === 0 && !testMode) {
+            showEndLevelView();
+            return;
+        }
+        
         controlsDock.style.display = 'flex';
         idkBtn.disabled = false;
         ttsBtn.disabled = false;
@@ -285,24 +351,25 @@
         wordEl.textContent = quizDirection === 'en-ko' ? current.en : current.ko;
         buildChoices(current);
 
-        if (testMode) {
-            choicesEl.classList.remove('hidden');
-            toggleChoicesBtn.style.display = 'none';
-            startTimer(6);
-        } else {
-            choicesEl.classList.add('hidden');
-            toggleChoicesBtn.style.display = 'inline-flex';
+        const showChoicesImmediately = (currentLevel === 1 || testMode);
+        choicesEl.classList.toggle('hidden', !showChoicesImmediately);
+        toggleChoicesBtn.style.display = showChoicesImmediately ? 'none' : 'inline-flex';
+        
+        if (!showChoicesImmediately) {
             toggleChoicesBtn.textContent = '보기';
+        }
+        
+        if (testMode) {
+            startTimer(6);
         }
         
         qStart = performance.now();
         if (quizDirection === 'en-ko') {
-            speak(current.en);
+            speak(current.en, 'en-US');
         }
     }
 
     async function onChoice(e) {
-        uiTap();
         const btn = e.currentTarget;
         const correct = btn.dataset.correct === 'true';
         [...choicesEl.children].forEach(b => b.disabled = true);
@@ -311,8 +378,9 @@
         const elapsedSec = Math.round((performance.now() - qStart) / 100) / 10;
 
         if (correct) {
+            playCorrectSound();
             btn.classList.add('correct');
-            speak(current.en, 1.1);
+            
             if (testMode) {
                 testDone++;
                 testCorrect++;
@@ -324,6 +392,7 @@
             await sleep(800);
             nextQuestion();
         } else {
+            playWrongSound();
             btn.classList.add('wrong');
             [...choicesEl.children].forEach(c => {
                 if (c.dataset.correct === 'true') c.classList.add('correct');
@@ -341,32 +410,29 @@
     }
 
     function onTimeout() {
+        playWrongSound();
         [...choicesEl.children].forEach(c => {
             c.disabled = true;
             if (c.dataset.correct === 'true') c.classList.add('correct');
         });
-        const elapsedSec = Math.round((performance.now() - qStart) / 100) / 10;
+        const elapsedSec = 6;
 
-        if (testMode) {
-            testDone++;
-            testWrongAnswers.push(current);
-            sendResult({type:'result', userId:testUserId, setKey:currentSetKey, setLabel:labelForSet(currentSetKey), level:4, word:current.en, correctKo:current.ko, selectedKo:'시간초과', correct:false, elapsedSec, timestamp:new Date().toISOString(), userAgent:navigator.userAgent});
-        } else {
-            queue.push(current);
-        }
+        testDone++;
+        testWrongAnswers.push(current);
+        sendResult({type:'result', userId:testUserId, setKey:currentSetKey, setLabel:labelForSet(currentSetKey), level:4, word:current.en, correctKo:current.ko, selectedKo:'시간초과', correct:false, elapsedSec, timestamp:new Date().toISOString(), userAgent:navigator.userAgent});
+        
         updateStatus();
         wrongPopup();
     }
 
     function wrongPopup() {
         modalTitle.textContent = '오답!';
-        
         const reviewSource = REVIEW_DATA[currentSetKey] || {};
         const data = reviewSource[current.en];
         
         let detailHTML = `<p><strong>정답: ${current.ko}</strong></p>`;
         
-        if (data) {
+        if (data && data.example && data.translation && data.mnemonic) {
             detailHTML += `
                 <div class="review-content">
                     <p><strong>예문:</strong> ${data.example}</p>
@@ -380,10 +446,11 @@
         modal.classList.remove('hidden');
     }
 
-    // ================== 오답 학습 기능 (로컬 데이터) ==================
     function showReview() {
         setView('#view-review');
         crumb.textContent = '오답 학습';
+        replayWrongBtn.style.display = testWrongAnswers.length > 0 ? 'inline-flex' : 'none';
+        
         reviewListContainer.innerHTML = '';
         const list = document.createElement('div');
         list.className = 'review-list';
@@ -391,14 +458,15 @@
         const reviewSource = REVIEW_DATA[currentSetKey] || {};
 
         if (testWrongAnswers.length === 0) {
-            list.innerHTML = '<p>틀린 문제가 없습니다! 완벽해요!</p>';
+            list.innerHTML = '<p style="text-align:center;">틀린 문제가 없습니다! 완벽해요!</p>';
         } else {
-            testWrongAnswers.forEach(word => {
+            const uniqueWrongAnswers = [...new Map(testWrongAnswers.map(item => [item['en'], item])).values()];
+            uniqueWrongAnswers.forEach(word => {
                 const card = document.createElement('div');
                 card.className = 'review-card';
                 const data = reviewSource[word.en];
 
-                if (data) {
+                if (data && data.example && data.translation && data.mnemonic) {
                     card.innerHTML = `
                         <h3>${word.en}<span>${word.ko}</span></h3>
                         <p><strong>예문:</strong> ${data.example}</p>
@@ -413,11 +481,35 @@
         }
         reviewListContainer.appendChild(list);
     }
+    
+    // ================== 오답 다시 듣기 기능 ==================
+    async function replayWrongAnswers() {
+        if (isReplaying || testWrongAnswers.length === 0) return;
+        
+        isReplaying = true;
+        replayWrongBtn.disabled = true;
+        replayWrongBtn.textContent = '듣는 중...';
+
+        const uniqueWrongAnswers = [...new Map(testWrongAnswers.map(item => [item['en'], item])).values()];
+        
+        for (const word of uniqueWrongAnswers) {
+            if (!isReplaying) break; // 중간에 중지하면 루프 탈출
+            await speak(word.en, 'en-US', 0.9);
+            await sleep(150);
+            await speak(word.ko, 'ko-KR', 0.95);
+            await sleep(500);
+        }
+        
+        replayWrongBtn.disabled = false;
+        replayWrongBtn.textContent = '오답 다시 듣기';
+        isReplaying = false;
+    }
+
 
     // ================== 이벤트 리스너 설정 ==================
     function setupEventListeners() {
         $$('#view-sets .grid.sets .btn').forEach(b => {
-            b.addEventListener('click', () => startSet(b.dataset.set));
+            b.addEventListener('click', () => selectMainSet(b.dataset.set));
         });
 
         $$('#view-levels [data-level]').forEach(b => {
@@ -433,60 +525,56 @@
 
         idStart.addEventListener('click', () => {
             const v = (idInput.value || '').trim();
-            if (!v) {
-                idInput.focus();
-                return;
-            }
+            if (!v) { idInput.focus(); return; }
             testUserId = v;
             idModal.classList.add('hidden');
             startLevelCore();
         });
-        idCancel.addEventListener('click', () => idModal.classList.add('hidden'));
+        idCancel.addEventListener('click', () => {
+            idModal.classList.add('hidden');
+            setView('#view-levels');
+        });
 
         homeBtn.addEventListener('click', goHome);
         reviewHomeBtn.addEventListener('click', goHome);
 
         ttsBtn.addEventListener('click', () => {
-            uiTap();
-            if (current) speak(current.en);
+            if (current && quizDirection === 'en-ko') speak(current.en, 'en-US');
         });
 
         toggleChoicesBtn.addEventListener('click', () => {
-            uiTap();
             const hidden = choicesEl.classList.toggle('hidden');
-            toggleChoicesBtn.textContent = hidden ? '보기' : '보기 표시됨';
+            toggleChoicesBtn.textContent = hidden ? '보기' : '숨기기';
         });
 
         idkBtn.addEventListener('click', () => {
-            uiTap();
+            playWrongSound();
             choicesEl.classList.remove('hidden');
-            [...choicesEl.children].forEach(c => c.disabled = true);
             [...choicesEl.children].forEach(c => {
+                c.disabled = true;
                 if (c.dataset.correct === 'true') c.classList.add('correct');
             });
             stopTimer();
-            const elapsedSec = Math.round((performance.now() - qStart) / 100) / 10;
             if (testMode) {
-                testDone++;
-                testWrongAnswers.push(current);
-                sendResult({type:'result', userId:testUserId, setKey:currentSetKey, setLabel:labelForSet(currentSetKey), level:4, word:current.en, correctKo:current.ko, selectedKo:'모름', correct:false, elapsedSec, timestamp:new Date().toISOString(), userAgent:navigator.userAgent});
+                onTimeout(); 
             } else {
                 queue.push(current);
+                updateStatus();
+                wrongPopup();
             }
-            updateStatus();
-            wrongPopup();
         });
         
-        retryBtn.addEventListener('click', startLevelCore);
+        retryBtn.addEventListener('click', () => startLevel(currentLevel));
         nextLevelBtn.addEventListener('click', () => startLevel(currentLevel + 1));
         reviewWrongBtn.addEventListener('click', showReview);
 
         modalNext.addEventListener('click', async () => {
-            uiTap();
             modal.classList.add('hidden');
-            await sleep(500);
+            await sleep(100); 
             nextQuestion();
         });
+        
+        replayWrongBtn.addEventListener('click', replayWrongAnswers);
     }
 
     // ================== 앱 초기화 ==================
