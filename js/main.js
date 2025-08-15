@@ -5,6 +5,8 @@
     // ================== 설정 ==================
     const SPREADSHEET_URL = 'https://script.google.com/macros/s/AKfycbyrlSHgq7H-MY4XVOLWuBXlvScmbeGHHZkVEWtnquPOjx9GX5qJA4xlbZKvdSrcOdg/exec';
     const WORDS_PER_SUBSET = 50;
+    // === 모바일(터치) 기기인지 확인하는 변수 추가 ===
+    const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
 
     // ================== 상태 변수 ==================
     let currentSetKey = null;
@@ -23,7 +25,7 @@
     let qStart = 0;
     let timer = null;
     let timeLeft = 0;
-    let isReplaying = false; // 오디오 재생 중 상태
+    let isReplaying = false;
 
     // ================== 엘리먼트 캐싱 ==================
     const $ = sel => document.querySelector(sel);
@@ -71,7 +73,7 @@
     const reviewWrongBtn = $('#review-wrong-btn');
     const reviewListContainer = $('#review-list-container');
     const reviewHomeBtn = $('#review-home-btn');
-    const replayWrongBtn = $('#replay-wrong-btn'); // 오답 다시 듣기 버튼
+    const replayWrongBtn = $('#replay-wrong-btn');
 
     // ================== 유틸리티 및 오디오 함수 ==================
     const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -81,6 +83,9 @@
     const ctx = AC ? new AC() : null;
     function tone(freq = 660, duration = 90, type = 'sine', gain = 0.18) {
         if (!ctx) return;
+        if (ctx.state === 'suspended') {
+            ctx.resume();
+        }
         const o = ctx.createOscillator();
         const g = ctx.createGain();
         o.type = type;
@@ -124,6 +129,8 @@
         
         return new Promise(resolve => {
             try {
+                // 음성 재생 전 기존 큐를 취소하여 충돌 방지
+                window.speechSynthesis.cancel();
                 const u = new SpeechSynthesisUtterance(text);
                 u.lang = lang;
                 if (lang.startsWith('en') && enVoice) u.voice = enVoice;
@@ -201,7 +208,7 @@
     }
 
     function goHome() {
-        window.speechSynthesis.cancel(); // 홈으로 갈 때 음성 중지
+        window.speechSynthesis.cancel();
         isReplaying = false;
         setView('#view-sets'); 
         crumb.textContent = '세트 선택'; 
@@ -364,7 +371,8 @@
         }
         
         qStart = performance.now();
-        if (quizDirection === 'en-ko') {
+        // === 수정된 부분: 모바일(터치 기기)에서는 자동 재생 안 함 ===
+        if (quizDirection === 'en-ko' && !isTouchDevice) {
             speak(current.en, 'en-US');
         }
     }
@@ -493,7 +501,7 @@
         const uniqueWrongAnswers = [...new Map(testWrongAnswers.map(item => [item['en'], item])).values()];
         
         for (const word of uniqueWrongAnswers) {
-            if (!isReplaying) break; // 중간에 중지하면 루프 탈출
+            if (!isReplaying) break; // 중간에 홈 버튼 등으로 중지시키면 루프 탈출
             await speak(word.en, 'en-US', 0.9);
             await sleep(150);
             await speak(word.ko, 'ko-KR', 0.95);
@@ -505,7 +513,6 @@
         isReplaying = false;
     }
 
-
     // ================== 이벤트 리스너 설정 ==================
     function setupEventListeners() {
         $$('#view-sets .grid.sets .btn').forEach(b => {
@@ -513,7 +520,16 @@
         });
 
         $$('#view-levels [data-level]').forEach(b => {
-            b.addEventListener('click', () => startLevel(parseInt(b.dataset.level)));
+            b.addEventListener('click', () => {
+                // 오디오 기능 '깨우기' (모바일 브라우저 정책 대응)
+                if (ctx && ctx.state === 'suspended') {
+                    ctx.resume();
+                }
+                if ('speechSynthesis' in window && window.speechSynthesis.getVoices().length === 0) {
+                    window.speechSynthesis.getVoices();
+                }
+                startLevel(parseInt(b.dataset.level));
+            });
         });
 
         $$('#view-level3-mode [data-direction]').forEach(b => {
