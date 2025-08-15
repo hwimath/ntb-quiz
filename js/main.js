@@ -5,7 +5,6 @@
     // ================== 설정 ==================
     const SPREADSHEET_URL = 'https://script.google.com/macros/s/AKfycbyrlSHgq7H-MY4XVOLWuBXlvScmbeGHHZkVEWtnquPOjx9GX5qJA4xlbZKvdSrcOdg/exec';
     const WORDS_PER_SUBSET = 50;
-    const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
 
     // ================== 상태 변수 ==================
     let currentSetKey = null;
@@ -25,7 +24,7 @@
     let timer = null;
     let timeLeft = 0;
     let isReplaying = false;
-    let isAudioUnlocked = false; // 오디오 활성화 상태
+    let isAudioUnlocked = false;
 
     // ================== 엘리먼트 캐싱 ==================
     const $ = sel => document.querySelector(sel);
@@ -76,16 +75,10 @@
     const AC = window.AudioContext || window.webkitAudioContext;
     const ctx = AC ? new AC() : null;
 
-    // 오디오 잠금 해제 함수
     function unlockAudio() {
         if (isAudioUnlocked) return;
         if (ctx && ctx.state === 'suspended') {
             ctx.resume();
-        }
-        if ('speechSynthesis' in window) {
-            const utterance = new SpeechSynthesisUtterance('');
-            utterance.volume = 0; // 소리 안나게
-            window.speechSynthesis.speak(utterance);
         }
         isAudioUnlocked = true;
     }
@@ -123,7 +116,6 @@
         window.speechSynthesis.onvoiceschanged = loadVoices;
         loadVoices();
     }
-    // === 멈춤 방지 기능이 추가된 speak 함수 ===
     function speak(text, lang = 'en-US', rate = 0.95) {
         if (!('speechSynthesis' in window) || !text) return Promise.resolve();
         if (!areVoicesLoaded) {
@@ -136,11 +128,7 @@
                 const u = new SpeechSynthesisUtterance(text);
                 
                 u.onend = () => { clearTimeout(timeoutId); resolve(); };
-                u.onerror = (e) => {
-                    console.error("TTS Error:", e);
-                    clearTimeout(timeoutId);
-                    resolve();
-                };
+                u.onerror = (e) => { console.error("TTS Error:", e); clearTimeout(timeoutId); resolve(); };
                 
                 u.lang = lang;
                 if (lang.startsWith('en') && enVoice) u.voice = enVoice;
@@ -150,9 +138,9 @@
                 window.speechSynthesis.cancel();
                 window.speechSynthesis.speak(u);
 
-                // 5초 이상 응답 없으면 강제로 Promise 종료 (앱 멈춤 방지)
                 timeoutId = setTimeout(() => {
                     console.warn('TTS가 5초 이상 응답이 없어 강제 종료합니다.');
+                    window.speechSynthesis.cancel(); // 멈춘 TTS 강제 취소
                     resolve();
                 }, 5000);
 
@@ -221,7 +209,7 @@
     }
     
     function selectMainSet(setKey) {
-        unlockAudio(); // === 오디오 잠금 해제! ===
+        unlockAudio(); // 사용자의 첫 터치로 오디오 기능 활성화
         currentSetKey = setKey;
         const mainSet = WORD_SETS[setKey];
         const totalWords = mainSet.length;
@@ -321,9 +309,7 @@
         if (!showChoicesImmediately) toggleChoicesBtn.textContent = '보기';
         if (testMode) startTimer(6);
         qStart = performance.now();
-        if (quizDirection === 'en-ko' && !isTouchDevice) {
-            speak(current.en, 'en-US');
-        }
+        // === 자동 재생 기능은 가장 안정적인 스피커 버튼(ttsBtn)으로 대체 ===
     }
 
     async function onChoice(e) {
